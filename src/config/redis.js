@@ -7,9 +7,16 @@ class RedisClient {
     }
 
     async connect() {
+        // Skip Redis if not configured
+        if (!process.env.REDIS_URL) {
+            console.warn('⚠️ REDIS_URL not set - using local cache only');
+            this.isConnected = false;
+            return null;
+        }
+
         try {
             this.client = redis.createClient({
-                url: process.env.REDIS_URL || 'redis://localhost:6379'
+                url: process.env.REDIS_URL
             });
 
             this.client.on('error', (err) => {
@@ -25,7 +32,8 @@ class RedisClient {
             await this.client.connect();
             return this.client;
         } catch (error) {
-            console.error('❌ Failed to connect to Redis:', error);
+            console.warn('⚠️ Failed to connect to Redis - using local cache only');
+            console.error(error);
             this.isConnected = false;
             return null;
         }
