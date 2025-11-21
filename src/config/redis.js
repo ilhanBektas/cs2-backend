@@ -15,9 +15,22 @@ class RedisClient {
         }
 
         try {
-            this.client = redis.createClient({
-                url: process.env.REDIS_URL
-            });
+            const redisUrl = process.env.REDIS_URL;
+
+            // Configure client with TLS support for Upstash
+            const clientConfig = {
+                url: redisUrl
+            };
+
+            // Enable TLS for secure connections (Upstash)
+            if (redisUrl && redisUrl.startsWith('rediss://')) {
+                clientConfig.socket = {
+                    tls: true,
+                    rejectUnauthorized: false // Upstash compatibility
+                };
+            }
+
+            this.client = redis.createClient(clientConfig);
 
             this.client.on('error', (err) => {
                 console.error('❌ Redis Client Error:', err);
@@ -25,8 +38,12 @@ class RedisClient {
             });
 
             this.client.on('connect', () => {
-                console.log('✅ Redis connected');
+                console.log('✅ Redis connected successfully');
                 this.isConnected = true;
+            });
+
+            this.client.on('ready', () => {
+                console.log('✅ Redis client ready');
             });
 
             await this.client.connect();
