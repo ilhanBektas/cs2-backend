@@ -1,0 +1,18 @@
+{
+  "name": "cs2-esports-proxy",
+  "version": "2.0.0",
+  "description": "Production-ready proxy server with Redis cache for CS2 Esports App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "redis": "^4.6.11"
+  }
+}
