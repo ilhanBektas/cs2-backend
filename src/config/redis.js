@@ -15,7 +15,16 @@ class RedisClient {
         }
 
         try {
-            const redisUrl = process.env.REDIS_URL;
+            let redisUrl = process.env.REDIS_URL;
+
+            // Sanitize URL if user pasted full CLI command
+            if (redisUrl.includes('redis-cli')) {
+                const match = redisUrl.match(/redis:\/\/[^ ]+/);
+                if (match) {
+                    redisUrl = match[0];
+                    console.log('🧹 Sanitized REDIS_URL from CLI command');
+                }
+            }
 
             // Configure client with TLS support for Upstash
             const clientConfig = {

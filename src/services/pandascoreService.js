@@ -15,61 +15,98 @@ class PandaScoreService {
     async fetchMatches() {
         try {
             console.log('🔄 Fetching matches from PandaScore...');
-            let allMatches = [];
+            let pastMatches = [];
+            let futureMatches = [];
 
-            // Filter out matches older than 7 days (Safe buffer for recent results)
+            // Helper to format date without milliseconds (API compatibility)
+            const formatDate = (d) => d.toISOString().split('.')[0] + 'Z';
+
+            const now = new Date();
+            const nowIso = formatDate(now);
+
+            // Future limit: 1 year from now
+            const futureDate = new Date();
+            futureDate.setFullYear(futureDate.getFullYear() + 1);
+            const futureIso = formatDate(futureDate);
+
+            // Filter out matches older than 7 days
             const cutoffDate = new Date();
             cutoffDate.setDate(cutoffDate.getDate() - 7);
-            const beginAtRange = `${cutoffDate.toISOString()},`;
+            const cutoffIso = formatDate(cutoffDate);
 
-            // Fetch multiple pages (up to 1000 matches)
-            for (let page = 1; page <= 10; page++) {
+            // 1. Fetch Future Matches (Now -> Future)
+            // Sort: begin_at (Ascending) to get nearest future matches first
+            for (let page = 1; page <= 5; page++) {
                 const response = await axios.get(`${BASE_URL}/csgo/matches`, {
                     headers: {
                         'Authorization': `Bearer ${API_KEY}`,
                         'Accept': 'application/json'
                     },
                     params: {
-                        'sort': '-begin_at', // Descending (Newest/Future first)
+                        'sort': 'begin_at',
                         'filter[status]': 'running,not_started,finished',
-                        'range[begin_at]': beginAtRange,
+                        'range[begin_at]': `${nowIso},${futureIso}`,
                         'per_page': 100,
                         'page': page
                     },
                     timeout: 10000
                 });
 
-                console.log(`📄 Page ${page}: Fetched ${response.data.length} matches`);
                 if (response.data.length === 0) break;
-                allMatches = [...allMatches, ...response.data];
+                futureMatches = [...futureMatches, ...response.data];
             }
+            console.log(`� Fetched ${futureMatches.length} future matches`);
+
+            // 2. Fetch Past Matches (Now -> Past)
+            // Sort: -begin_at (Descending) to get nearest past matches first
+            for (let page = 1; page <= 5; page++) {
+                const response = await axios.get(`${BASE_URL}/csgo/matches`, {
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`,
+                        'Accept': 'application/json'
+                    },
+                    params: {
+                        'sort': '-begin_at',
+                        'filter[status]': 'running,not_started,finished',
+                        'range[begin_at]': `${cutoffIso},${nowIso}`,
+                        'per_page': 100,
+                        'page': page
+                    },
+                    timeout: 10000
+                });
+
+                if (response.data.length === 0) break;
+                pastMatches = [...pastMatches, ...response.data];
+            }
+            console.log(`📜 Fetched ${pastMatches.length} past matches`);
+
+            // Combine matches
+            const allMatches = [...pastMatches, ...futureMatches];
 
             console.log(`📊 Total fetched from PandaScore: ${allMatches.length} matches`);
 
-            const filteredMatches = allMatches.filter(match => {
-                // Always include live matches regardless of date
-                if (match.status === 'running') return true;
-
-                const matchDate = new Date(match.begin_at);
-                return matchDate >= cutoffDate;
-            });
+            // Deduplicate just in case
+            const uniqueMatches = Array.from(new Map(allMatches.map(m => [m.id, m])).values());
 
             // Update local cache
-            this.localCache = filteredMatches;
+            this.localCache = uniqueMatches;
             this.lastFetch = new Date().toISOString();
 
             // Update Redis cache
             const cacheData = {
-                matches: filteredMatches,
+                matches: uniqueMatches,
                 lastUpdate: this.lastFetch,
-                count: filteredMatches.length
+                count: uniqueMatches.length
             };
             await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
 
-            console.log(`✅ Updated cache with ${filteredMatches.length} matches (filtered from ${allMatches.length})`);
+            console.log(`✅ Updated cache with ${uniqueMatches.length} matches`);
             return cacheData;
         } catch (error) {
             console.error('❌ Error fetching matches:', error.message);
+            if (error.response) {
+                console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+            }
             return null;
         }
     }
