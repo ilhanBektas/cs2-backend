@@ -1,5 +1,6 @@
 const axios = require('axios');
 const redisClient = require('../config/redis');
+const notificationService = require('./notificationService');
 
 const API_KEY = process.env.PANDASCORE_API_KEY;
 const BASE_URL = 'https://api.pandascore.co';
@@ -80,8 +81,28 @@ class PandaScoreService {
             }
             console.log(`📜 Fetched ${pastMatches.length} past matches`);
 
+            // 3. Fetch ALL Running (LIVE) Matches
+            // Important: Fetch running matches separately to ensure we don't miss any due to date range issues
+            let runningMatches = [];
+            try {
+                const response = await axios.get(`${BASE_URL}/csgo/matches/running`, {
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`,
+                        'Accept': 'application/json'
+                    },
+                    params: {
+                        'per_page': 100
+                    },
+                    timeout: 10000
+                });
+                runningMatches = response.data || [];
+                console.log(`🔴 Fetched ${runningMatches.length} LIVE (running) matches`);
+            } catch (error) {
+                console.log('⚠️ Error fetching running matches:', error.message);
+            }
+
             // Combine matches
-            const allMatches = [...pastMatches, ...futureMatches];
+            const allMatches = [...pastMatches, ...futureMatches, ...runningMatches];
 
             console.log(`📊 Total fetched from PandaScore: ${allMatches.length} matches`);
 
@@ -101,6 +122,10 @@ class PandaScoreService {
             await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
 
             console.log(`✅ Updated cache with ${uniqueMatches.length} matches`);
+
+            // Process match status changes for notifications
+            await notificationService.processMatchUpdates(uniqueMatches);
+
             return cacheData;
         } catch (error) {
             console.error('❌ Error fetching matches:', error.message);

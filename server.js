@@ -4,6 +4,7 @@ const cors = require('cors');
 const cron = require('node-cron');
 const redisClient = require('./src/config/redis');
 const pandascoreService = require('./src/services/pandascoreService');
+const notificationService = require('./src/services/notificationService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -49,6 +50,42 @@ app.get('/matches', async (req, res) => {
     } catch (error) {
         console.error('Error in /matches:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Register FCM token
+app.post('/notifications/register', async (req, res) => {
+    try {
+        const { fcmToken, favoriteTeams } = req.body;
+
+        if (!fcmToken || !favoriteTeams) {
+            return res.status(400).json({
+                error: 'fcmToken and favoriteTeams are required'
+            });
+        }
+
+        const result = await notificationService.registerToken(fcmToken, favoriteTeams);
+        res.json(result);
+    } catch (error) {
+        console.error('Error in /notifications/register:', error);
+        res.status(500).json({ error: 'Failed to register FCM token' });
+    }
+});
+
+// Unregister FCM token
+app.post('/notifications/unregister', async (req, res) => {
+    try {
+        const { fcmToken } = req.body;
+
+        if (!fcmToken) {
+            return res.status(400).json({ error: 'fcmToken is required' });
+        }
+
+        const result = await notificationService.unregisterToken(fcmToken);
+        res.json(result);
+    } catch (error) {
+        console.error('Error in /notifications/unregister:', error);
+        res.status(500).json({ error: 'Failed to unregister FCM token' });
     }
 });
 

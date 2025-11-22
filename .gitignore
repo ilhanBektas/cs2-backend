@@ -3,6 +3,9 @@
 .env.local
 .env.production
 
+# Firebase credentials
+firebase-service-account.json
+
 # Dependencies
 node_modules/
 
