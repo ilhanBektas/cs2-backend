@@ -42,6 +42,8 @@ class NotificationService {
     constructor() {
         this.TOKENS_KEY = 'fcm:tokens'; // Hash: { token: JSON(favoriteTeams) }
         this.MATCH_STATUS_KEY = 'match:statuses'; // Hash: { matchId: status }
+        this.MATCH_SCORES_KEY = 'match:scores'; // Hash: { matchId: "score1-score2" }
+        this.MATCH_REMINDER_KEY = 'match:reminders'; // Set: matchIds that got 10min reminder
     }
 
     /**
@@ -95,43 +97,28 @@ class NotificationService {
         }
 
         try {
-            const statusChanges = [];
+            const now = new Date();
 
             for (const match of matches) {
-                const prevStatus = await redisClient.client.hGet(
-                    this.MATCH_STATUS_KEY,
-                    match.id.toString()
-                );
-
+                const matchId = match.id.toString();
+                const prevStatus = await redisClient.client.hGet(this.MATCH_STATUS_KEY, matchId);
                 const currentStatus = match.status;
 
-                // Detect status changes
+                // 1. Check for 10-minute reminder
+                await this.check10MinuteReminder(match, now);
+
+                // 2. Check for status changes (match start/end)
                 if (prevStatus && prevStatus !== currentStatus) {
-                    statusChanges.push({
-                        match,
-                        oldStatus: prevStatus,
-                        newStatus: currentStatus
-                    });
-
-                    // Update stored status
-                    await redisClient.client.hSet(
-                        this.MATCH_STATUS_KEY,
-                        match.id.toString(),
-                        currentStatus
-                    );
+                    await this.sendStatusChangeNotification(match, prevStatus, currentStatus);
+                    await redisClient.client.hSet(this.MATCH_STATUS_KEY, matchId, currentStatus);
                 } else if (!prevStatus) {
-                    // First time seeing this match, store its status
-                    await redisClient.client.hSet(
-                        this.MATCH_STATUS_KEY,
-                        match.id.toString(),
-                        currentStatus
-                    );
+                    await redisClient.client.hSet(this.MATCH_STATUS_KEY, matchId, currentStatus);
                 }
-            }
 
-            // Send notifications for status changes
-            for (const change of statusChanges) {
-                await this.sendMatchNotifications(change);
+                // 3. Check for score changes (only for running matches)
+                if (currentStatus === 'running') {
+                    await this.checkScoreChange(match);
+                }
             }
         } catch (error) {
             console.error('❌ Error processing match updates:', error.message);
@@ -139,41 +126,115 @@ class NotificationService {
     }
 
     /**
-     * Send notifications for a match status change
-     * @param {Object} change - Match change object { match, oldStatus, newStatus }
+     * Send 10-minute reminder for upcoming matches
      */
-    async sendMatchNotifications(change) {
-        const { match, oldStatus, newStatus } = change;
-
+    async check10MinuteReminder(match, now) {
         try {
-            // Get all registered tokens
-            const tokenData = await redisClient.client.hGetAll(this.TOKENS_KEY);
-            if (!tokenData || Object.keys(tokenData).length === 0) {
-                return; // No registered users
+            const matchId = match.id.toString();
+            const matchTime = new Date(match.begin_at || match.scheduled_at);
+            const timeDiff = matchTime - now;
+            const tenMinutes = 10 * 60 * 1000; // 10 minutes in milliseconds
+
+            // Check if match starts in next 10-15 minutes (buffer for cron intervals)
+            if (timeDiff > 0 && timeDiff <= tenMinutes + (5 * 60 * 1000)) {
+                const alreadySent = await redisClient.client.sIsMember(this.MATCH_REMINDER_KEY, matchId);
+
+                if (!alreadySent) {
+                    const teamNames = [
+                        match.opponents[0]?.opponent?.name || 'Team 1',
+                        match.opponents[1]?.opponent?.name || 'Team 2'
+                    ];
+
+                    await this.sendNotificationToFavorites(
+                        teamNames,
+                        '⏰ MATCH STARTING SOON',
+                        `${teamNames[0]} vs ${teamNames[1]} starts in 10 minutes!`,
+                        { match_id: matchId, type: 'reminder' }
+                    );
+
+                    // Mark as sent
+                    await redisClient.client.sAdd(this.MATCH_REMINDER_KEY, matchId);
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error checking 10-minute reminder:', error.message);
+        }
+    }
+
+    /**
+     * Check for score changes in running matches
+     */
+    async checkScoreChange(match) {
+        try {
+            const matchId = match.id.toString();
+            const score1 = match.results?.[0]?.score || 0;
+            const score2 = match.results?.[1]?.score || 0;
+            const currentScore = `${score1}-${score2}`;
+
+            const prevScore = await redisClient.client.hGet(this.MATCH_SCORES_KEY, matchId);
+
+            if (prevScore && prevScore !== currentScore) {
+                const teamNames = [
+                    match.opponents[0]?.opponent?.name || 'Team 1',
+                    match.opponents[1]?.opponent?.name || 'Team 2'
+                ];
+
+                await this.sendNotificationToFavorites(
+                    teamNames,
+                    '📊 SCORE UPDATE',
+                    `${teamNames[0]} ${score1} - ${score2} ${teamNames[1]}`,
+                    { match_id: matchId, type: 'score_update', score: currentScore }
+                );
             }
 
-            const teamNames = [
-                match.opponents[0]?.opponent?.name || 'Team 1',
-                match.opponents[1]?.opponent?.name || 'Team 2'
-            ];
+            // Update stored score
+            await redisClient.client.hSet(this.MATCH_SCORES_KEY, matchId, currentScore);
+        } catch (error) {
+            console.error('❌ Error checking score change:', error.message);
+        }
+    }
 
-            // Determine notification content based on status change
-            let title, body;
+    /**
+     * Send notification for status changes (match start/end)
+     */
+    async sendStatusChangeNotification(match, oldStatus, newStatus) {
+        const teamNames = [
+            match.opponents[0]?.opponent?.name || 'Team 1',
+            match.opponents[1]?.opponent?.name || 'Team 2'
+        ];
 
-            if (newStatus === 'running' && oldStatus === 'not_started') {
-                // Match started
-                title = '🔴 LIVE NOW';
-                body = `${teamNames[0]} vs ${teamNames[1]} is starting!`;
-            } else if (newStatus === 'finished' && oldStatus === 'running') {
-                // Match finished
-                const score1 = match.results?.[0]?.score || 0;
-                const score2 = match.results?.[1]?.score || 0;
-                const winner = score1 > score2 ? teamNames[0] : teamNames[1];
+        let title, body;
 
-                title = '✅ MATCH FINISHED';
-                body = `${winner} defeated ${score1 > score2 ? teamNames[1] : teamNames[0]} (${score1}-${score2})`;
-            } else {
-                return; // Ignore other status transitions
+        if (newStatus === 'running' && oldStatus === 'not_started') {
+            title = '🔴 LIVE NOW';
+            body = `${teamNames[0]} vs ${teamNames[1]} is starting!`;
+        } else if (newStatus === 'finished' && oldStatus === 'running') {
+            const score1 = match.results?.[0]?.score || 0;
+            const score2 = match.results?.[1]?.score || 0;
+            const winner = score1 > score2 ? teamNames[0] : teamNames[1];
+
+            title = '✅ MATCH FINISHED';
+            body = `${winner} defeated ${score1 > score2 ? teamNames[1] : teamNames[0]} (${score1}-${score2})`;
+        } else {
+            return;
+        }
+
+        await this.sendNotificationToFavorites(
+            teamNames,
+            title,
+            body,
+            { match_id: match.id.toString(), type: 'status_change', status: newStatus }
+        );
+    }
+
+    /**
+     * Send notifications to users who favorited the teams
+     */
+    async sendNotificationToFavorites(teamNames, title, body, additionalData = {}) {
+        try {
+            const tokenData = await redisClient.client.hGetAll(this.TOKENS_KEY);
+            if (!tokenData || Object.keys(tokenData).length === 0) {
+                return;
             }
 
             // Find tokens that have favorited either team
@@ -193,26 +254,22 @@ class NotificationService {
             }
 
             if (tokensToNotify.length === 0) {
-                return; // No users interested in this match
+                return;
             }
 
-            // Send notification to all interested users
+            // Send notification
             const message = {
-                notification: {
-                    title,
-                    body
-                },
+                notification: { title, body },
                 data: {
-                    match_id: match.id.toString(),
                     team1: teamNames[0],
                     team2: teamNames[1],
-                    status: newStatus
+                    ...additionalData
                 },
                 tokens: tokensToNotify
             };
 
             const response = await admin.messaging().sendEachForMulticast(message);
-            console.log(`📤 Sent ${response.successCount} notifications for match: ${teamNames[0]} vs ${teamNames[1]}`);
+            console.log(`📤 Sent ${response.successCount} "${title}" notifications`);
 
             // Remove failed tokens
             if (response.failureCount > 0) {
@@ -223,11 +280,10 @@ class NotificationService {
                     }
                 });
 
-                // Clean up invalid tokens
                 for (const token of failedTokens) {
                     await redisClient.client.hDel(this.TOKENS_KEY, token);
                 }
-                console.log(`🗑️ Removed ${failedTokens.length} invalid FCM tokens`);
+                console.log(`🗑️ Removed ${failedTokens.length} invalid tokens`);
             }
         } catch (error) {
             console.error('❌ Error sending notifications:', error.message);
