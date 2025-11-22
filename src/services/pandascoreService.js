@@ -17,28 +17,39 @@ class PandaScoreService {
             console.log('🔄 Fetching matches from PandaScore...');
             let allMatches = [];
 
-            for (let page = 1; page <= 3; page++) {
+            // Filter out matches older than 7 days (Safe buffer for recent results)
+            const cutoffDate = new Date();
+            cutoffDate.setDate(cutoffDate.getDate() - 7);
+            const beginAtRange = `${cutoffDate.toISOString()},`;
+
+            // Fetch multiple pages (up to 1000 matches)
+            for (let page = 1; page <= 10; page++) {
                 const response = await axios.get(`${BASE_URL}/csgo/matches`, {
                     headers: {
                         'Authorization': `Bearer ${API_KEY}`,
                         'Accept': 'application/json'
                     },
                     params: {
-                        'sort': 'begin_at',
-                        'filter[status]': 'running,not_started',
+                        'sort': '-begin_at', // Descending (Newest/Future first)
+                        'filter[status]': 'running,not_started,finished',
+                        'range[begin_at]': beginAtRange,
                         'per_page': 100,
                         'page': page
                     },
                     timeout: 10000
                 });
 
+                console.log(`📄 Page ${page}: Fetched ${response.data.length} matches`);
                 if (response.data.length === 0) break;
                 allMatches = [...allMatches, ...response.data];
             }
 
-            // Filter out matches before Nov 21, 2025
-            const cutoffDate = new Date('2025-11-21T00:00:00Z');
+            console.log(`📊 Total fetched from PandaScore: ${allMatches.length} matches`);
+
             const filteredMatches = allMatches.filter(match => {
+                // Always include live matches regardless of date
+                if (match.status === 'running') return true;
+
                 const matchDate = new Date(match.begin_at);
                 return matchDate >= cutoffDate;
             });
