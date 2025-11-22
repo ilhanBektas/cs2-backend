@@ -19,11 +19,18 @@ class RedisClient {
 
             // Sanitize URL if user pasted full CLI command
             if (redisUrl.includes('redis-cli')) {
-                const match = redisUrl.match(/redis:\/\/[^ ]+/);
+                // Match both redis:// and rediss://
+                const match = redisUrl.match(/redis(s)?:\/\/[^ ]+/);
                 if (match) {
                     redisUrl = match[0];
                     console.log('🧹 Sanitized REDIS_URL from CLI command');
                 }
+            }
+
+            // For Upstash, ensure we use rediss:// (TLS)
+            if (redisUrl.includes('upstash.io') && redisUrl.startsWith('redis://')) {
+                redisUrl = redisUrl.replace('redis://', 'rediss://');
+                console.log('🔒 Converted to TLS for Upstash');
             }
 
             // Configure client with TLS support for Upstash
