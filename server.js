@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const redisClient = require('./src/config/redis');
 const pandascoreService = require('./src/services/pandascoreService');
 const notificationService = require('./src/services/notificationService');
+const teamsService = require('./src/services/teamsService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -86,6 +87,17 @@ app.post('/notifications/unregister', async (req, res) => {
     } catch (error) {
         console.error('Error in /notifications/unregister:', error);
         res.status(500).json({ error: 'Failed to unregister FCM token' });
+    }
+});
+
+// Get team logos
+app.get('/teams/logos', async (req, res) => {
+    try {
+        const logos = await teamsService.getTeamLogos();
+        res.json({ logos, count: Object.keys(logos).length });
+    } catch (error) {
+        console.error('Error in /teams/logos:', error);
+        res.status(500).json({ error: 'Failed to fetch team logos' });
     }
 });
 
