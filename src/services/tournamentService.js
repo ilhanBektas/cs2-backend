@@ -183,8 +183,12 @@ class TournamentService {
                 lastUpdate: new Date().toISOString()
             };
 
-            // Cache standings
-            await redisClient.set(`${STANDINGS_CACHE_KEY}${tournamentId}`, result, CACHE_TTL);
+            // Cache standings (with error handling)
+            try {
+                await redisClient.set(`${STANDINGS_CACHE_KEY}${tournamentId}`, result, CACHE_TTL);
+            } catch (redisError) {
+                console.log('⚠️ Redis cache unavailable for standings');
+            }
 
             console.log(`✅ Fetched standings for tournament ${tournamentId}`);
             return result;
@@ -272,11 +276,15 @@ class TournamentService {
     async getStandings(tournamentId) {
         const cacheKey = `${STANDINGS_CACHE_KEY}${tournamentId}`;
 
-        // Try Redis cache
-        const cached = await redisClient.get(cacheKey);
-        if (cached) {
-            console.log(`📦 Serving standings for tournament ${tournamentId} from cache`);
-            return cached;
+        // Try Redis cache (with error handling)
+        try {
+            const cached = await redisClient.get(cacheKey);
+            if (cached) {
+                console.log(`📦 Serving standings for tournament ${tournamentId} from cache`);
+                return cached;
+            }
+        } catch (redisError) {
+            console.log('⚠️ Redis unavailable, fetching fresh standings');
         }
 
         // Fetch fresh

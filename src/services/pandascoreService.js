@@ -113,15 +113,19 @@ class PandaScoreService {
             this.localCache = uniqueMatches;
             this.lastFetch = new Date().toISOString();
 
-            // Update Redis cache
+            // Update Redis cache (with error handling)
             const cacheData = {
                 matches: uniqueMatches,
                 lastUpdate: this.lastFetch,
                 count: uniqueMatches.length
             };
-            await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
 
-            console.log(`✅ Updated cache with ${uniqueMatches.length} matches`);
+            try {
+                await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
+                console.log(`✅ Updated Redis cache with ${uniqueMatches.length} matches`);
+            } catch (redisError) {
+                console.log('⚠️ Redis cache unavailable, using local cache only');
+            }
 
             // Process match status changes for notifications
             await notificationService.processMatchUpdates(uniqueMatches);
@@ -137,16 +141,20 @@ class PandaScoreService {
     }
 
     async getMatches() {
-        // Try Redis first
-        const cached = await redisClient.get(CACHE_KEY);
-        if (cached) {
-            console.log('📦 Serving from Redis cache');
-            return cached;
+        // Try Redis first (with error handling)
+        try {
+            const cached = await redisClient.get(CACHE_KEY);
+            if (cached) {
+                console.log('📦 Serving matches from Redis cache');
+                return cached;
+            }
+        } catch (redisError) {
+            console.log('⚠️ Redis unavailable, checking local cache');
         }
 
         // Fallback to local cache
         if (this.localCache.length > 0) {
-            console.log('💾 Serving from local cache');
+            console.log('💾 Serving matches from local cache');
             return {
                 matches: this.localCache,
                 lastUpdate: this.lastFetch,
@@ -154,8 +162,8 @@ class PandaScoreService {
             };
         }
 
-        // No cache, fetch fresh
-        console.log('🆕 No cache available, fetching fresh data');
+        // No cache available, fetch fresh data
+        console.log('🆕 No cache available, fetching fresh matches');
         return await this.fetchMatches();
     }
 
