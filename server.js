@@ -5,7 +5,6 @@ const cron = require('node-cron');
 const redisClient = require('./src/config/redis');
 const pandascoreService = require('./src/services/pandascoreService');
 const notificationService = require('./src/services/notificationService');
-const tournamentService = require('./src/services/tournamentService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -22,25 +21,10 @@ app.use(express.json());
 // Initial fetch
 pandascoreService.fetchMatches();
 
-// Fetch tournaments with error handling
-(async () => {
-    try {
-        await tournamentService.fetchTournaments();
-    } catch (error) {
-        console.error('⚠️ Initial tournament fetch failed:', error.message);
-    }
-})();
-
-// Schedule updates every 30 seconds
-cron.schedule('*/30 * * * * *', () => {
+// Schedule updates every 60 seconds (reduced from 30s to avoid rate limits)
+cron.schedule('*/60 * * * * *', () => {
     console.log('⏰ Cron: Fetching matches...');
     pandascoreService.fetchMatches();
-});
-
-// Schedule tournament updates every 30 minutes
-cron.schedule('*/30 * * * *', () => {
-    console.log('⏰ Cron: Fetching tournaments...');
-    tournamentService.fetchTournaments();
 });
 
 // ===== ROUTES =====
@@ -102,44 +86,6 @@ app.post('/notifications/unregister', async (req, res) => {
     } catch (error) {
         console.error('Error in /notifications/unregister:', error);
         res.status(500).json({ error: 'Failed to unregister FCM token' });
-    }
-});
-
-// Get tournaments
-app.get('/tournaments', async (req, res) => {
-    try {
-        const data = await tournamentService.getTournaments();
-        if (!data) {
-            // Return empty tournaments instead of 503
-            return res.json({
-                tournaments: [],
-                lastUpdate: new Date().toISOString(),
-                count: 0,
-                message: 'No tournaments available at this time'
-            });
-        }
-        res.json(data);
-    } catch (error) {
-        console.error('Error in /tournaments:', error);
-        // Return empty instead of error
-        res.json({
-            tournaments: [],
-            lastUpdate: new Date().toISOString(),
-            count: 0,
-            error: error.message
-        });
-    }
-});
-
-// Get tournament standings
-app.get('/tournaments/:id/standings', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const data = await tournamentService.getStandings(id);
-        res.json(data);
-    } catch (error) {
-        console.error('Error in /tournaments/:id/standings:', error);
-        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

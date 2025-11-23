@@ -37,7 +37,8 @@ class PandaScoreService {
 
             // 1. Fetch Future Matches (Now -> Future)
             // Sort: begin_at (Ascending) to get nearest future matches first
-            for (let page = 1; page <= 5; page++) {
+            // Reduced from 5 to 2 pages to stay within rate limits
+            for (let page = 1; page <= 2; page++) {
                 const response = await axios.get(`${BASE_URL}/csgo/matches`, {
                     headers: {
                         'Authorization': `Bearer ${API_KEY}`,
@@ -60,7 +61,8 @@ class PandaScoreService {
 
             // 2. Fetch Past Matches (Now -> Past)
             // Sort: -begin_at (Descending) to get nearest past matches first
-            for (let page = 1; page <= 5; page++) {
+            // Reduced from 5 to 2 pages to stay within rate limits
+            for (let page = 1; page <= 2; page++) {
                 const response = await axios.get(`${BASE_URL}/csgo/matches`, {
                     headers: {
                         'Authorization': `Bearer ${API_KEY}`,
@@ -113,19 +115,15 @@ class PandaScoreService {
             this.localCache = uniqueMatches;
             this.lastFetch = new Date().toISOString();
 
-            // Update Redis cache (with error handling)
+            // Update Redis cache
             const cacheData = {
                 matches: uniqueMatches,
                 lastUpdate: this.lastFetch,
                 count: uniqueMatches.length
             };
+            await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
 
-            try {
-                await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
-                console.log(`✅ Updated Redis cache with ${uniqueMatches.length} matches`);
-            } catch (redisError) {
-                console.log('⚠️ Redis cache unavailable, using local cache only');
-            }
+            console.log(`✅ Updated cache with ${uniqueMatches.length} matches`);
 
             // Process match status changes for notifications
             await notificationService.processMatchUpdates(uniqueMatches);
@@ -141,20 +139,16 @@ class PandaScoreService {
     }
 
     async getMatches() {
-        // Try Redis first (with error handling)
-        try {
-            const cached = await redisClient.get(CACHE_KEY);
-            if (cached) {
-                console.log('📦 Serving matches from Redis cache');
-                return cached;
-            }
-        } catch (redisError) {
-            console.log('⚠️ Redis unavailable, checking local cache');
+        // Try Redis first
+        const cached = await redisClient.get(CACHE_KEY);
+        if (cached) {
+            console.log('📦 Serving from Redis cache');
+            return cached;
         }
 
         // Fallback to local cache
         if (this.localCache.length > 0) {
-            console.log('💾 Serving matches from local cache');
+            console.log('💾 Serving from local cache');
             return {
                 matches: this.localCache,
                 lastUpdate: this.lastFetch,
@@ -162,8 +156,8 @@ class PandaScoreService {
             };
         }
 
-        // No cache available, fetch fresh data
-        console.log('🆕 No cache available, fetching fresh matches');
+        // No cache, fetch fresh
+        console.log('🆕 No cache available, fetching fresh data');
         return await this.fetchMatches();
     }
 
