@@ -40,31 +40,53 @@ initializeFirebase();
 
 class NotificationService {
     constructor() {
-        this.TOKENS_KEY = 'fcm:tokens'; // Hash: { token: JSON(favoriteTeams) }
+        this.TOKENS_KEY = 'fcm:tokens'; // Hash: { token: JSON({ favoriteTeams, language }) }
         this.MATCH_STATUS_KEY = 'match:statuses'; // Hash: { matchId: status }
         this.MATCH_SCORES_KEY = 'match:scores'; // Hash: { matchId: "score1-score2" }
         this.MATCH_REMINDER_KEY = 'match:reminders'; // Set: matchIds that got 10min reminder
+
+        // Localized notification message templates
+        this.MESSAGES = {
+            en: {
+                matchStarting: (t1, t2) => ({ title: '🔴 LIVE NOW', body: `${t1} vs ${t2} is starting!` }),
+                matchFinished: (w, l, s) => ({ title: '✅ MATCH FINISHED', body: `${w} defeated ${l} ${s}` }),
+                reminder: (t1, t2) => ({ title: '⏰ MATCH STARTING SOON', body: `${t1} vs ${t2} starts in 10 minutes!` }),
+                scoreUpdate: (t1, s1, s2, t2) => ({ title: '📊 SCORE UPDATE', body: `${t1} ${s1} - ${s2} ${t2}` })
+            },
+            tr: {
+                matchStarting: (t1, t2) => ({ title: '🔴 CANLI', body: `${t1} vs ${t2} başlıyor!` }),
+                matchFinished: (w, l, s) => ({ title: '✅ MAÇ BİTTİ', body: `${w}, ${l}'i ${s} yendi` }),
+                reminder: (t1, t2) => ({ title: '⏰ MAÇ BAŞLAMAK ÜZERE', body: `${t1} vs ${t2} 10 dakika içinde başlıyor!` }),
+                scoreUpdate: (t1, s1, s2, t2) => ({ title: '📊 SKOR GÜNCELLENDİ', body: `${t1} ${s1} - ${s2} ${t2}` })
+            }
+        };
     }
 
     /**
-     * Register a user's FCM token with their favorite teams
+     * Register a user's FCM token with their favorite teams and language
      * @param {string} fcmToken - Firebase Cloud Messaging token
      * @param {string[]} favoriteTeams - Array of favorite team names
+     * @param {string} language - User's preferred language ('en' or 'tr')
      */
-    async registerToken(fcmToken, favoriteTeams) {
+    async registerToken(fcmToken, favoriteTeams, language = 'en') {
         try {
             if (!fcmToken || !favoriteTeams || favoriteTeams.length === 0) {
                 throw new Error('FCM token and favorite teams are required');
             }
 
-            // Store token with favorite teams in Redis
+            // Store token with favorite teams and language in Redis
+            const userData = {
+                favoriteTeams,
+                language: language || 'en'
+            };
+
             await redisClient.client.hSet(
                 this.TOKENS_KEY,
                 fcmToken,
-                JSON.stringify(favoriteTeams)
+                JSON.stringify(userData)
             );
 
-            console.log(`📲 Registered FCM token for ${favoriteTeams.length} teams`);
+            console.log(`📲 Registered FCM token for ${favoriteTeams.length} teams (${language})`);
             return { success: true };
         } catch (error) {
             console.error('❌ Error registering FCM token:', error.message);
@@ -145,10 +167,10 @@ class NotificationService {
                         match.opponents[1]?.opponent?.name || 'Team 2'
                     ];
 
-                    await this.sendNotificationToFavorites(
+                    await this.sendLocalizedNotification(
                         teamNames,
-                        '⏰ MATCH STARTING SOON',
-                        `${teamNames[0]} vs ${teamNames[1]} starts in 10 minutes!`,
+                        'reminder',
+                        [teamNames[0], teamNames[1]],
                         { match_id: matchId, type: 'reminder' }
                     );
 
@@ -179,10 +201,10 @@ class NotificationService {
                     match.opponents[1]?.opponent?.name || 'Team 2'
                 ];
 
-                await this.sendNotificationToFavorites(
+                await this.sendLocalizedNotification(
                     teamNames,
-                    '📊 SCORE UPDATE',
-                    `${teamNames[0]} ${score1} - ${score2} ${teamNames[1]}`,
+                    'scoreUpdate',
+                    [teamNames[0], score1, score2, teamNames[1]],
                     { match_id: matchId, type: 'score_update', score: currentScore }
                 );
             }
@@ -203,87 +225,108 @@ class NotificationService {
             match.opponents[1]?.opponent?.name || 'Team 2'
         ];
 
-        let title, body;
-
         if (newStatus === 'running' && oldStatus === 'not_started') {
-            title = '🔴 LIVE NOW';
-            body = `${teamNames[0]} vs ${teamNames[1]} is starting!`;
+            await this.sendLocalizedNotification(
+                teamNames,
+                'matchStarting',
+                [teamNames[0], teamNames[1]],
+                { match_id: match.id.toString(), type: 'status_change', status: newStatus }
+            );
         } else if (newStatus === 'finished' && oldStatus === 'running') {
             const score1 = match.results?.[0]?.score || 0;
             const score2 = match.results?.[1]?.score || 0;
             const winner = score1 > score2 ? teamNames[0] : teamNames[1];
+            const loser = score1 > score2 ? teamNames[1] : teamNames[0];
+            const score = `(${score1}-${score2})`;
 
-            title = '✅ MATCH FINISHED';
-            body = `${winner} defeated ${score1 > score2 ? teamNames[1] : teamNames[0]} (${score1}-${score2})`;
-        } else {
-            return;
+            await this.sendLocalizedNotification(
+                teamNames,
+                'matchFinished',
+                [winner, loser, score],
+                { match_id: match.id.toString(), type: 'status_change', status: newStatus }
+            );
         }
-
-        await this.sendNotificationToFavorites(
-            teamNames,
-            title,
-            body,
-            { match_id: match.id.toString(), type: 'status_change', status: newStatus }
-        );
     }
 
     /**
-     * Send notifications to users who favorited the teams
+     * Send localized notifications to users who favorited the teams
      */
-    async sendNotificationToFavorites(teamNames, title, body, additionalData = {}) {
+    async sendLocalizedNotification(teamNames, messageType, args, additionalData = {}) {
         try {
             const tokenData = await redisClient.client.hGetAll(this.TOKENS_KEY);
             if (!tokenData || Object.keys(tokenData).length === 0) {
                 return;
             }
 
-            // Find tokens that have favorited either team
-            const tokensToNotify = [];
-            for (const [token, teamsJson] of Object.entries(tokenData)) {
-                const favoriteTeams = JSON.parse(teamsJson);
+            // Group tokens by language
+            const tokensByLanguage = { en: [], tr: [] };
 
-                const isFavorite = teamNames.some(teamName =>
-                    favoriteTeams.some(fav =>
-                        this.matchesTeam(fav, teamName)
-                    )
-                );
+            for (const [token, dataJson] of Object.entries(tokenData)) {
+                try {
+                    const userData = JSON.parse(dataJson);
+                    // Handle both old format (array) and new format (object)
+                    let favoriteTeams, language;
 
-                if (isFavorite) {
-                    tokensToNotify.push(token);
-                }
-            }
-
-            if (tokensToNotify.length === 0) {
-                return;
-            }
-
-            // Send notification
-            const message = {
-                notification: { title, body },
-                data: {
-                    team1: teamNames[0],
-                    team2: teamNames[1],
-                    ...additionalData
-                },
-                tokens: tokensToNotify
-            };
-
-            const response = await admin.messaging().sendEachForMulticast(message);
-            console.log(`📤 Sent ${response.successCount} "${title}" notifications`);
-
-            // Remove failed tokens
-            if (response.failureCount > 0) {
-                const failedTokens = [];
-                response.responses.forEach((resp, idx) => {
-                    if (!resp.success) {
-                        failedTokens.push(tokensToNotify[idx]);
+                    if (Array.isArray(userData)) {
+                        favoriteTeams = userData;
+                        language = 'en'; // Default for old tokens
+                    } else {
+                        favoriteTeams = userData.favoriteTeams;
+                        language = userData.language || 'en';
                     }
-                });
 
-                for (const token of failedTokens) {
-                    await redisClient.client.hDel(this.TOKENS_KEY, token);
+                    if (!favoriteTeams) continue;
+
+                    const isFavorite = teamNames.some(teamName =>
+                        favoriteTeams.some(fav =>
+                            this.matchesTeam(fav, teamName)
+                        )
+                    );
+
+                    if (isFavorite) {
+                        tokensByLanguage[language] = tokensByLanguage[language] || [];
+                        tokensByLanguage[language].push(token);
+                    }
+                } catch (e) {
+                    console.error('Error parsing token data:', e);
                 }
-                console.log(`🗑️ Removed ${failedTokens.length} invalid tokens`);
+            }
+
+            // Send notifications for each language
+            for (const [language, tokens] of Object.entries(tokensByLanguage)) {
+                if (!tokens || tokens.length === 0) continue;
+
+                // Fallback to English if language not supported
+                const templates = this.MESSAGES[language] || this.MESSAGES['en'];
+                const { title, body } = templates[messageType](...args);
+
+                const message = {
+                    notification: { title, body },
+                    data: {
+                        team1: teamNames[0],
+                        team2: teamNames[1],
+                        ...additionalData
+                    },
+                    tokens
+                };
+
+                const response = await admin.messaging().sendEachForMulticast(message);
+                console.log(`📤 Sent ${response.successCount} "${title}" notifications (${language})`);
+
+                // Remove failed tokens
+                if (response.failureCount > 0) {
+                    const failedTokens = [];
+                    response.responses.forEach((resp, idx) => {
+                        if (!resp.success) {
+                            failedTokens.push(tokens[idx]);
+                        }
+                    });
+
+                    for (const token of failedTokens) {
+                        await redisClient.client.hDel(this.TOKENS_KEY, token);
+                    }
+                    console.log(`🗑️ Removed ${failedTokens.length} invalid tokens`);
+                }
             }
         } catch (error) {
             console.error('❌ Error sending notifications:', error.message);
@@ -296,6 +339,8 @@ class NotificationService {
      * @param {string} teamName - Team name to check
      */
     matchesTeam(favorite, teamName) {
+        if (!favorite || !teamName) return false;
+
         const favLower = favorite.toLowerCase().trim();
         const teamLower = teamName.toLowerCase().trim();
 

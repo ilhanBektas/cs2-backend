@@ -56,7 +56,7 @@ app.get('/matches', async (req, res) => {
 // Register FCM token
 app.post('/notifications/register', async (req, res) => {
     try {
-        const { fcmToken, favoriteTeams } = req.body;
+        const { fcmToken, favoriteTeams, language } = req.body;
 
         if (!fcmToken || !favoriteTeams) {
             return res.status(400).json({
@@ -64,7 +64,7 @@ app.post('/notifications/register', async (req, res) => {
             });
         }
 
-        const result = await notificationService.registerToken(fcmToken, favoriteTeams);
+        const result = await notificationService.registerToken(fcmToken, favoriteTeams, language || 'en');
         res.json(result);
     } catch (error) {
         console.error('Error in /notifications/register:', error);
