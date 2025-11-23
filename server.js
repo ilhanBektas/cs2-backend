@@ -16,6 +16,7 @@ app.use(express.json());
 
 // Connect to Redis
 (async () => {
+    console.log('🚀 Server starting... (Version: Logos Endpoint Added)');
     await redisClient.connect();
 })();
 
