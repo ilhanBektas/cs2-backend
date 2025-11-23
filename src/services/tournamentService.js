@@ -20,37 +20,48 @@ class TournamentService {
         try {
             console.log('🏆 Fetching CS2 tournaments...');
 
-            const now = new Date();
-            const futureDate = new Date();
-            futureDate.setMonth(futureDate.getMonth() + 2); // Next 2 months
-
-            // Fetch running and upcoming tournaments
+            // Fetch upcoming and recent tournaments (simpler query)
             const response = await axios.get(`${BASE_URL}/csgo/tournaments`, {
                 headers: {
                     'Authorization': `Bearer ${API_KEY}`,
                     'Accept': 'application/json'
                 },
                 params: {
-                    'filter[running]': 'true,false',
-                    'range[begin_at]': `${now.toISOString()},${futureDate.toISOString()}`,
-                    'sort': 'begin_at',
-                    'per_page': 20
+                    'sort': '-begin_at',
+                    'per_page': 30
                 },
                 timeout: 10000
             });
 
             const tournaments = response.data || [];
 
-            // Filter to show only major tournaments (tier: a, b, or has prize pool)
+            // Filter to show only major tournaments with recent/upcoming dates
+            const now = new Date();
+            const oneMonthAgo = new Date(now);
+            oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+            const twoMonthsAhead = new Date(now);
+            twoMonthsAhead.setMonth(twoMonthsAhead.getMonth() + 2);
+
             const majorTournaments = tournaments.filter(t => {
+                const beginAt = t.begin_at ? new Date(t.begin_at) : null;
+                const endAt = t.end_at ? new Date(t.end_at) : null;
+
+                // Check if tournament is in date range
+                const isInDateRange = beginAt && (
+                    (beginAt >= oneMonthAgo && beginAt <= twoMonthsAhead) ||
+                    (endAt && endAt >= now)
+                );
+
+                // Check if it's a major tournament
                 const hasPrizePool = t.prizepool && parseInt(t.prizepool) > 10000;
                 const isMajorTier = t.tier && ['a', 'b', 's'].includes(t.tier.toLowerCase());
-                return hasPrizePool || isMajorTier;
+
+                return isInDateRange && (hasPrizePool || isMajorTier);
             });
 
             console.log(`✅ Fetched ${majorTournaments.length} major tournaments`);
 
-            // Cache tournaments
+            // Cache tournaments locally
             this.localTournamentsCache = majorTournaments;
             this.lastTournamentsFetch = new Date().toISOString();
 
@@ -60,7 +71,12 @@ class TournamentService {
                 count: majorTournaments.length
             };
 
-            await redisClient.set(TOURNAMENTS_CACHE_KEY, cacheData, CACHE_TTL);
+            // Try to cache in Redis, but don't fail if Redis is down
+            try {
+                await redisClient.set(TOURNAMENTS_CACHE_KEY, cacheData, CACHE_TTL);
+            } catch (redisError) {
+                console.log('⚠️ Redis cache unavailable, using local cache only');
+            }
 
             return cacheData;
         } catch (error) {
@@ -76,11 +92,15 @@ class TournamentService {
      * Get tournaments (from cache or fetch fresh)
      */
     async getTournaments() {
-        // Try Redis first
-        const cached = await redisClient.get(TOURNAMENTS_CACHE_KEY);
-        if (cached) {
-            console.log('📦 Serving tournaments from Redis cache');
-            return cached;
+        // Try Redis first (with error handling)
+        try {
+            const cached = await redisClient.get(TOURNAMENTS_CACHE_KEY);
+            if (cached) {
+                console.log('📦 Serving tournaments from Redis cache');
+                return cached;
+            }
+        } catch (redisError) {
+            console.log('⚠️ Redis unavailable, checking local cache');
         }
 
         // Fallback to local cache
