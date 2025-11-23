@@ -21,7 +21,15 @@ app.use(express.json());
 
 // Initial fetch
 pandascoreService.fetchMatches();
-tournamentService.fetchTournaments();
+
+// Fetch tournaments with error handling
+(async () => {
+    try {
+        await tournamentService.fetchTournaments();
+    } catch (error) {
+        console.error('⚠️ Initial tournament fetch failed:', error.message);
+    }
+})();
 
 // Schedule updates every 30 seconds
 cron.schedule('*/30 * * * * *', () => {
@@ -102,12 +110,24 @@ app.get('/tournaments', async (req, res) => {
     try {
         const data = await tournamentService.getTournaments();
         if (!data) {
-            return res.status(503).json({ error: 'Service temporarily unavailable' });
+            // Return empty tournaments instead of 503
+            return res.json({
+                tournaments: [],
+                lastUpdate: new Date().toISOString(),
+                count: 0,
+                message: 'No tournaments available at this time'
+            });
         }
         res.json(data);
     } catch (error) {
         console.error('Error in /tournaments:', error);
-        res.status(500).json({ error: 'Internal server error' });
+        // Return empty instead of error
+        res.json({
+            tournaments: [],
+            lastUpdate: new Date().toISOString(),
+            count: 0,
+            error: error.message
+        });
     }
 });
 
