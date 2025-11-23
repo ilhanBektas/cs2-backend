@@ -46,7 +46,7 @@ class PandaScoreService {
                     },
                     params: {
                         'sort': 'begin_at',
-                        'filter[status]': 'running,not_started,finished',
+                        'filter[status]': 'running,not_started,finished,canceled',
                         'range[begin_at]': `${nowIso},${futureIso}`,
                         'per_page': 100,
                         'page': page
@@ -70,7 +70,7 @@ class PandaScoreService {
                     },
                     params: {
                         'sort': '-begin_at',
-                        'filter[status]': 'running,not_started,finished',
+                        'filter[status]': 'running,not_started,finished,canceled',
                         'range[begin_at]': `${cutoffIso},${nowIso}`,
                         'per_page': 100,
                         'page': page
