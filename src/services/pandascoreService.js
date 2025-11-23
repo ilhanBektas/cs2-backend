@@ -104,12 +104,35 @@ class PandaScoreService {
             }
 
             // Combine matches
-            const allMatches = [...pastMatches, ...futureMatches, ...runningMatches];
+            const allFetchedMatches = [...pastMatches, ...futureMatches, ...runningMatches];
 
-            console.log(`📊 Total fetched from PandaScore: ${allMatches.length} matches`);
+            console.log(`📊 Total fetched from PandaScore: ${allFetchedMatches.length} matches`);
 
-            // Deduplicate just in case
-            const uniqueMatches = Array.from(new Map(allMatches.map(m => [m.id, m])).values());
+            // Get existing matches from Redis to preserve history
+            let existingMatches = [];
+            try {
+                const cachedData = await redisClient.get(CACHE_KEY);
+                if (cachedData && cachedData.matches) {
+                    existingMatches = cachedData.matches;
+                    console.log(`📦 Found ${existingMatches.length} existing matches in cache`);
+                }
+            } catch (e) {
+                console.log('⚠️ Could not read existing cache for merging:', e.message);
+            }
+
+            // Merge: Create a map from existing matches, then overwrite with new fetched matches
+            // This ensures we keep old matches that are no longer returned by the API window
+            const matchMap = new Map(existingMatches.map(m => [m.id, m]));
+
+            // Update with new data
+            allFetchedMatches.forEach(m => {
+                matchMap.set(m.id, m);
+            });
+
+            // Convert back to array and sort by date
+            const uniqueMatches = Array.from(matchMap.values()).sort((a, b) => {
+                return new Date(a.begin_at) - new Date(b.begin_at);
+            });
 
             // Update local cache
             this.localCache = uniqueMatches;
@@ -121,9 +144,12 @@ class PandaScoreService {
                 lastUpdate: this.lastFetch,
                 count: uniqueMatches.length
             };
-            await redisClient.set(CACHE_KEY, cacheData, CACHE_TTL);
 
-            console.log(`✅ Updated cache with ${uniqueMatches.length} matches`);
+            // Increase TTL to 7 days since we want to keep history
+            // Or remove TTL if we want it forever, but 7 days of *inactivity* is reasonable
+            await redisClient.set(CACHE_KEY, cacheData, 60 * 60 * 24 * 7);
+
+            console.log(`✅ Updated cache with ${uniqueMatches.length} matches (History preserved)`);
 
             // Process match status changes for notifications
             await notificationService.processMatchUpdates(uniqueMatches);
