@@ -29,7 +29,7 @@ class TeamsService {
             let page = 1;
             const perPage = 100;
 
-            while (page <= 3) { // Limit to 3 pages (300 teams) to avoid rate limits
+            while (page <= 5) { // Increased to 5 pages (500 teams) for better coverage
                 const response = await axios.get(`${BASE_URL}/teams`, {
                     params: {
                         token: PANDASCORE_API_KEY,
