@@ -35,7 +35,7 @@ class TeamsService {
                         token: PANDASCORE_API_KEY,
                         per_page: perPage,
                         page: page,
-                        sort: '-modified_at' // Get recently updated teams first
+                        sort: 'name' // Alphabetical sorting for consistent coverage
                     },
                     timeout: 10000
                 });
