@@ -7,7 +7,7 @@ class TeamsService {
     constructor() {
         this.teamsCache = null;
         this.cacheExpiry = null;
-        this.CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+        this.CACHE_DURATION = 1 * 60 * 1000; // Temporarily 1 minute for testing (normally 24 hours)
     }
 
     /**
