@@ -13,9 +13,114 @@ class PandaScoreService {
         this.lastFetch = null;
     }
 
+    async _updateCache(newMatches) {
+        try {
+            // Get existing matches from Redis to preserve history
+            let existingMatches = [];
+            try {
+                const cachedData = await redisClient.get(CACHE_KEY);
+                if (cachedData && cachedData.matches) {
+                    existingMatches = cachedData.matches;
+                }
+            } catch (e) {
+                console.log('⚠️ Could not read existing cache for merging:', e.message);
+            }
+
+            // Merge: Create a map from existing matches, then overwrite with new fetched matches
+            const matchMap = new Map(existingMatches.map(m => [m.id, m]));
+
+            // Update with new data
+            newMatches.forEach(m => {
+                matchMap.set(m.id, m);
+            });
+
+            // Convert back to array and sort by date
+            const uniqueMatches = Array.from(matchMap.values()).sort((a, b) => {
+                return new Date(a.begin_at) - new Date(b.begin_at);
+            });
+
+            // Update local cache
+            this.localCache = uniqueMatches;
+            this.lastFetch = new Date().toISOString();
+
+            // Update Redis cache
+            const cacheData = {
+                matches: uniqueMatches,
+                lastUpdate: this.lastFetch,
+                count: uniqueMatches.length
+            };
+
+            // 7 days TTL
+            await redisClient.set(CACHE_KEY, cacheData, 60 * 60 * 24 * 7);
+
+            // Process match status changes for notifications
+            // We only process updates for the matches we just fetched to avoid spamming/re-processing old ones unnecessarily
+            // But notificationService.processMatchUpdates handles diffing, so passing all is fine, 
+            // though passing only newMatches might be more efficient if the service supports it.
+            // For now, passing all uniqueMatches is safer to ensure consistent state.
+            await notificationService.processMatchUpdates(uniqueMatches);
+
+            return cacheData;
+        } catch (error) {
+            console.error('❌ Error updating cache:', error.message);
+            return null;
+        }
+    }
+
+    async fetchLiveMatches() {
+        try {
+            // console.log('⚡ Fetching LIVE/RECENT matches...');
+
+            // Helper to format date
+            const formatDate = (d) => d.toISOString().split('.')[0] + 'Z';
+
+            const now = new Date();
+
+            // Range: -12 hours to +12 hours
+            // This covers:
+            // - Currently running matches
+            // - Recently finished matches (for results)
+            // - Matches starting very soon
+            const start = new Date(now);
+            start.setHours(start.getHours() - 12);
+
+            const end = new Date(now);
+            end.setHours(end.getHours() + 12);
+
+            const startIso = formatDate(start);
+            const endIso = formatDate(end);
+
+            const response = await axios.get(`${BASE_URL}/csgo/matches`, {
+                headers: {
+                    'Authorization': `Bearer ${API_KEY}`,
+                    'Accept': 'application/json'
+                },
+                params: {
+                    'sort': 'begin_at',
+                    'filter[status]': 'running,not_started,finished',
+                    'range[begin_at]': `${startIso},${endIso}`,
+                    'per_page': 100
+                },
+                timeout: 5000
+            });
+
+            const matches = response.data || [];
+            // console.log(`⚡ Fetched ${matches.length} live/recent matches`);
+
+            if (matches.length > 0) {
+                await this._updateCache(matches);
+            }
+
+            return matches;
+        } catch (error) {
+            console.error('❌ Error fetching live matches:', error.message);
+            return [];
+        }
+    }
+
     async fetchMatches() {
         try {
-            console.log('🔄 Fetching matches from PandaScore...');
+            console.log('🔄 Fetching FULL SCHEDULE from PandaScore...');
             let pastMatches = [];
             let futureMatches = [];
 
@@ -36,8 +141,6 @@ class PandaScoreService {
             const cutoffIso = formatDate(cutoffDate);
 
             // 1. Fetch Future Matches (Now -> Future)
-            // Sort: begin_at (Ascending) to get nearest future matches first
-            // Reduced from 5 to 2 pages to stay within rate limits
             for (let page = 1; page <= 2; page++) {
                 const response = await axios.get(`${BASE_URL}/csgo/matches`, {
                     headers: {
@@ -46,7 +149,7 @@ class PandaScoreService {
                     },
                     params: {
                         'sort': 'begin_at',
-                        'filter[status]': 'running,not_started,finished,canceled',
+                        'filter[status]': 'running,not_started,finished',
                         'range[begin_at]': `${nowIso},${futureIso}`,
                         'per_page': 100,
                         'page': page
@@ -57,11 +160,9 @@ class PandaScoreService {
                 if (response.data.length === 0) break;
                 futureMatches = [...futureMatches, ...response.data];
             }
-            console.log(`� Fetched ${futureMatches.length} future matches`);
+            console.log(`🔮 Fetched ${futureMatches.length} future matches`);
 
             // 2. Fetch Past Matches (Now -> Past)
-            // Sort: -begin_at (Descending) to get nearest past matches first
-            // Reduced from 5 to 2 pages to stay within rate limits
             for (let page = 1; page <= 2; page++) {
                 const response = await axios.get(`${BASE_URL}/csgo/matches`, {
                     headers: {
@@ -70,7 +171,7 @@ class PandaScoreService {
                     },
                     params: {
                         'sort': '-begin_at',
-                        'filter[status]': 'running,not_started,finished,canceled',
+                        'filter[status]': 'running,not_started,finished',
                         'range[begin_at]': `${cutoffIso},${nowIso}`,
                         'per_page': 100,
                         'page': page
@@ -84,7 +185,6 @@ class PandaScoreService {
             console.log(`📜 Fetched ${pastMatches.length} past matches`);
 
             // 3. Fetch ALL Running (LIVE) Matches
-            // Important: Fetch running matches separately to ensure we don't miss any due to date range issues
             let runningMatches = [];
             try {
                 const response = await axios.get(`${BASE_URL}/csgo/matches/running`, {
@@ -105,56 +205,9 @@ class PandaScoreService {
 
             // Combine matches
             const allFetchedMatches = [...pastMatches, ...futureMatches, ...runningMatches];
-
             console.log(`📊 Total fetched from PandaScore: ${allFetchedMatches.length} matches`);
 
-            // Get existing matches from Redis to preserve history
-            let existingMatches = [];
-            try {
-                const cachedData = await redisClient.get(CACHE_KEY);
-                if (cachedData && cachedData.matches) {
-                    existingMatches = cachedData.matches;
-                    console.log(`📦 Found ${existingMatches.length} existing matches in cache`);
-                }
-            } catch (e) {
-                console.log('⚠️ Could not read existing cache for merging:', e.message);
-            }
-
-            // Merge: Create a map from existing matches, then overwrite with new fetched matches
-            // This ensures we keep old matches that are no longer returned by the API window
-            const matchMap = new Map(existingMatches.map(m => [m.id, m]));
-
-            // Update with new data
-            allFetchedMatches.forEach(m => {
-                matchMap.set(m.id, m);
-            });
-
-            // Convert back to array and sort by date
-            const uniqueMatches = Array.from(matchMap.values()).sort((a, b) => {
-                return new Date(a.begin_at) - new Date(b.begin_at);
-            });
-
-            // Update local cache
-            this.localCache = uniqueMatches;
-            this.lastFetch = new Date().toISOString();
-
-            // Update Redis cache
-            const cacheData = {
-                matches: uniqueMatches,
-                lastUpdate: this.lastFetch,
-                count: uniqueMatches.length
-            };
-
-            // Increase TTL to 7 days since we want to keep history
-            // Or remove TTL if we want it forever, but 7 days of *inactivity* is reasonable
-            await redisClient.set(CACHE_KEY, cacheData, 60 * 60 * 24 * 7);
-
-            console.log(`✅ Updated cache with ${uniqueMatches.length} matches (History preserved)`);
-
-            // Process match status changes for notifications
-            await notificationService.processMatchUpdates(uniqueMatches);
-
-            return cacheData;
+            return await this._updateCache(allFetchedMatches);
         } catch (error) {
             console.error('❌ Error fetching matches:', error.message);
             if (error.response) {

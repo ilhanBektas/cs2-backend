@@ -23,9 +23,15 @@ app.use(express.json());
 // Initial fetch
 pandascoreService.fetchMatches();
 
-// Schedule updates every 60 seconds (reduced from 30s to avoid rate limits)
-cron.schedule('*/60 * * * * *', () => {
-    console.log('⏰ Cron: Fetching matches...');
+// Schedule fast updates for LIVE/RECENT matches (every 15 seconds)
+cron.schedule('*/15 * * * * *', () => {
+    // console.log('⚡ Cron: Fetching live matches...');
+    pandascoreService.fetchLiveMatches();
+});
+
+// Schedule full updates for schedule/history (every 10 minutes)
+cron.schedule('*/10 * * * *', () => {
+    console.log('⏰ Cron: Fetching full schedule...');
     pandascoreService.fetchMatches();
 });
 
