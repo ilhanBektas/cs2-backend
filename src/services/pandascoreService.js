@@ -5,7 +5,9 @@ const notificationService = require('./notificationService');
 const API_KEY = process.env.PANDASCORE_API_KEY;
 const BASE_URL = 'https://api.pandascore.co';
 const CACHE_KEY = 'cs2:matches';
-const CACHE_TTL = parseInt(process.env.CACHE_TTL) || 30;
+
+// Helper function to format dates for API compatibility
+const formatDate = (d) => d.toISOString().split('.')[0] + 'Z';
 
 class PandaScoreService {
     constructor() {
@@ -50,14 +52,9 @@ class PandaScoreService {
                 count: uniqueMatches.length
             };
 
-            // 7 days TTL
+            // Update Redis cache (7 days TTL)
             await redisClient.set(CACHE_KEY, cacheData, 60 * 60 * 24 * 7);
 
-            // Process match status changes for notifications
-            // We only process updates for the matches we just fetched to avoid spamming/re-processing old ones unnecessarily
-            // But notificationService.processMatchUpdates handles diffing, so passing all is fine, 
-            // though passing only newMatches might be more efficient if the service supports it.
-            // For now, passing all uniqueMatches is safer to ensure consistent state.
             await notificationService.processMatchUpdates(uniqueMatches);
 
             return cacheData;
@@ -67,20 +64,28 @@ class PandaScoreService {
         }
     }
 
+    async fetchMatchDetails(matchId) {
+        try {
+            const response = await axios.get(`${BASE_URL}/csgo/matches/${matchId}`, {
+                headers: {
+                    'Authorization': `Bearer ${API_KEY}`,
+                    'Accept': 'application/json'
+                },
+                timeout: 5000
+            });
+
+            return response.data;
+        } catch (error) {
+            console.error(`❌ Error fetching details for match ${matchId}:`, error.message);
+            return null;
+        }
+    }
+
     async fetchLiveMatches() {
         try {
-            // console.log('⚡ Fetching LIVE/RECENT matches...');
-
-            // Helper to format date
-            const formatDate = (d) => d.toISOString().split('.')[0] + 'Z';
-
             const now = new Date();
 
-            // Range: -12 hours to +12 hours
-            // This covers:
-            // - Currently running matches
-            // - Recently finished matches (for results)
-            // - Matches starting very soon
+            // Range: -12 hours to +12 hours (covers live, recent, and upcoming matches)
             const start = new Date(now);
             start.setHours(start.getHours() - 12);
 
@@ -104,8 +109,23 @@ class PandaScoreService {
                 timeout: 5000
             });
 
-            const matches = response.data || [];
-            // console.log(`⚡ Fetched ${matches.length} live/recent matches`);
+            let matches = response.data || [];
+
+            // Enrich LIVE matches with detailed stream information
+            const runningMatches = matches.filter(m => m.status === 'running');
+            console.log(`🔴 Found ${runningMatches.length} LIVE matches, fetching detailed stream info...`);
+
+            for (const match of runningMatches) {
+                const detailedMatch = await this.fetchMatchDetails(match.id);
+                if (detailedMatch && detailedMatch.streams) {
+                    // Update the match in the array with detailed stream info
+                    const matchIndex = matches.findIndex(m => m.id === match.id);
+                    if (matchIndex !== -1) {
+                        matches[matchIndex] = { ...matches[matchIndex], streams: detailedMatch.streams };
+                        console.log(`   ✅ Match ${match.id}: ${detailedMatch.streams.length} stream(s) found`);
+                    }
+                }
+            }
 
             if (matches.length > 0) {
                 await this._updateCache(matches);
@@ -123,9 +143,6 @@ class PandaScoreService {
             console.log('🔄 Fetching FULL SCHEDULE from PandaScore...');
             let pastMatches = [];
             let futureMatches = [];
-
-            // Helper to format date without milliseconds (API compatibility)
-            const formatDate = (d) => d.toISOString().split('.')[0] + 'Z';
 
             const now = new Date();
             const nowIso = formatDate(now);
@@ -184,7 +201,7 @@ class PandaScoreService {
             }
             console.log(`📜 Fetched ${pastMatches.length} past matches`);
 
-            // 3. Fetch ALL Running (LIVE) Matches
+            // 3. Fetch ALL Running (LIVE) Matches with detailed stream info
             let runningMatches = [];
             try {
                 const response = await axios.get(`${BASE_URL}/csgo/matches/running`, {
@@ -199,6 +216,16 @@ class PandaScoreService {
                 });
                 runningMatches = response.data || [];
                 console.log(`🔴 Fetched ${runningMatches.length} LIVE (running) matches`);
+
+                // Enrich each live match with detailed stream information
+                for (let i = 0; i < runningMatches.length; i++) {
+                    const match = runningMatches[i];
+                    const detailedMatch = await this.fetchMatchDetails(match.id);
+                    if (detailedMatch && detailedMatch.streams) {
+                        runningMatches[i] = { ...match, streams: detailedMatch.streams };
+                        console.log(`   ✅ Live match ${match.id}: ${detailedMatch.streams.length} stream(s) found`);
+                    }
+                }
             } catch (error) {
                 console.log('⚠️ Error fetching running matches:', error.message);
             }
