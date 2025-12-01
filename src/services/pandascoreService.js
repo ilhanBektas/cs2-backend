@@ -64,22 +64,8 @@ class PandaScoreService {
         }
     }
 
-    async fetchMatchDetails(matchId) {
-        try {
-            const response = await axios.get(`${BASE_URL}/csgo/matches/${matchId}`, {
-                headers: {
-                    'Authorization': `Bearer ${API_KEY}`,
-                    'Accept': 'application/json'
-                },
-                timeout: 5000
-            });
-
-            return response.data;
-        } catch (error) {
-            console.error(`❌ Error fetching details for match ${matchId}:`, error.message);
-            return null;
-        }
-    }
+    // Note: Detail endpoint (/csgo/matches/{id}) requires premium API access (403 Forbidden)
+    // We use streams and official_stream_url from list endpoint instead
 
     async fetchLiveMatches() {
         try {
@@ -109,22 +95,12 @@ class PandaScoreService {
                 timeout: 5000
             });
 
-            let matches = response.data || [];
+            const matches = response.data || [];
 
-            // Enrich LIVE matches with detailed stream information
+            // List endpoint already includes streams and official_stream_url
             const runningMatches = matches.filter(m => m.status === 'running');
-            console.log(`🔴 Found ${runningMatches.length} LIVE matches, fetching detailed stream info...`);
-
-            for (const match of runningMatches) {
-                const detailedMatch = await this.fetchMatchDetails(match.id);
-                if (detailedMatch && detailedMatch.streams) {
-                    // Update the match in the array with detailed stream info
-                    const matchIndex = matches.findIndex(m => m.id === match.id);
-                    if (matchIndex !== -1) {
-                        matches[matchIndex] = { ...matches[matchIndex], streams: detailedMatch.streams };
-                        console.log(`   ✅ Match ${match.id}: ${detailedMatch.streams.length} stream(s) found`);
-                    }
-                }
+            if (runningMatches.length > 0) {
+                console.log(`🔴 Found ${runningMatches.length} LIVE matches with stream data from list endpoint`);
             }
 
             if (matches.length > 0) {
@@ -215,17 +191,7 @@ class PandaScoreService {
                     timeout: 10000
                 });
                 runningMatches = response.data || [];
-                console.log(`🔴 Fetched ${runningMatches.length} LIVE (running) matches`);
-
-                // Enrich each live match with detailed stream information
-                for (let i = 0; i < runningMatches.length; i++) {
-                    const match = runningMatches[i];
-                    const detailedMatch = await this.fetchMatchDetails(match.id);
-                    if (detailedMatch && detailedMatch.streams) {
-                        runningMatches[i] = { ...match, streams: detailedMatch.streams };
-                        console.log(`   ✅ Live match ${match.id}: ${detailedMatch.streams.length} stream(s) found`);
-                    }
-                }
+                console.log(`🔴 Fetched ${runningMatches.length} LIVE (running) matches (stream data included)`);
             } catch (error) {
                 console.log('⚠️ Error fetching running matches:', error.message);
             }
